@@ -500,7 +500,7 @@ var runWebAppServer = function () {
         var program = {
           format: "web-program-pre1",
           manifest: manifest,
-          version: process.env.AUTOUPDATE_VERSION || WebAppHashing.calculateClientHash(manifest, null, _.pick(
+          version: WebAppHashing.calculateClientHash(manifest, null, _.pick(
             __meteor_runtime_config__, 'PUBLIC_SETTINGS')),
           cordovaCompatibilityVersions: clientJson.cordovaCompatibilityVersions,
           PUBLIC_SETTINGS: __meteor_runtime_config__.PUBLIC_SETTINGS
@@ -588,13 +588,13 @@ var runWebAppServer = function () {
   // webserver
   var app = connect();
 
-  // Auto-compress any json, javascript, or text.
-  app.use(connect.compress());
-
   // Packages and apps can add handlers that run before any other Meteor
   // handlers via WebApp.rawConnectHandlers.
   var rawConnectHandlers = connect();
   app.use(rawConnectHandlers);
+
+  // Auto-compress any json, javascript, or text.
+  app.use(connect.compress());
 
   // We're not a proxy; reject (without crashing) attempts to treat us like
   // one. (See #1212.)
@@ -761,12 +761,34 @@ var runWebAppServer = function () {
   // own.
   httpServer.on('request', WebApp._timeoutAdjustmentRequestCallback);
 
+  // If the client gave us a bad request, tell it instead of just closing the
+  // socket. This lets load balancers in front of us differentiate between "a
+  // server is randomly closing sockets for no reason" and "client sent a bad
+  // request".
+  //
+  // This will only work on Node 6; Node 4 destroys the socket before calling
+  // this event. See https://github.com/nodejs/node/pull/4557/ for details.
+  httpServer.on('clientError', (err, socket) => {
+    // Pre-Node-6, do nothing.
+    if (socket.destroyed) {
+      return;
+    }
+
+    if (err.message === 'Parse Error') {
+      socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+    } else {
+      // For other errors, use the default behavior as if we had no clientError
+      // handler.
+      socket.destroy(err);
+    }
+  });
 
   // start up app
   _.extend(WebApp, {
     connectHandlers: packageAndAppHandlers,
     rawConnectHandlers: rawConnectHandlers,
     httpServer: httpServer,
+    connectApp: app,
     // For testing.
     suppressConnectErrors: function () {
       suppressConnectErrors = true;
